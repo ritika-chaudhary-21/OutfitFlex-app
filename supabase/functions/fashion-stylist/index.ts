@@ -30,11 +30,41 @@ serve(async (req) => {
     // Initialize Supabase client
     const supabase = createClient(supabaseUrl!, supabaseServiceKey!);
 
+    // Fetch user's profile for demographic information
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('age_group, gender, region')
+      .eq('id', user_id)
+      .single();
+
     // Fetch user's clothing items
     const { data: items, error } = await supabase
       .from('clothing_items')
       .select('*')
       .eq('user_id', user_id);
+
+    if (error) {
+      console.error('Database error:', error);
+      return new Response(JSON.stringify({ error: 'Failed to fetch wardrobe items' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!items || items.length === 0) {
+      return new Response(JSON.stringify({ outfits: [] }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Fetch disliked combinations to avoid
+    const { data: dislikedFeedback } = await supabase
+      .from('outfit_feedback')
+      .select('suggestion_data')
+      .eq('user_id', user_id)
+      .eq('feedback_type', 'dislike')
+      .order('created_at', { ascending: false })
+      .limit(20);
 
     if (error) {
       console.error('Database error:', error);
@@ -66,7 +96,64 @@ serve(async (req) => {
       notes: item.notes
     }));
 
+    // Extract disliked patterns
+    const dislikedPatterns = dislikedFeedback?.map(fb => {
+      const data = fb.suggestion_data as any;
+      return {
+        items: data.items?.map((i: any) => i.name || i) || [],
+        reasoning: data.reasoning || ''
+      };
+    }) || [];
+
+    const dislikedInfo = dislikedPatterns.length > 0 
+      ? `\n\nIMPORTANT - User has disliked these combinations. AVOID similar patterns:\n${JSON.stringify(dislikedPatterns, null, 2)}\n\nDo NOT suggest outfits with similar item combinations or color/pattern pairings.`
+      : '';
+
+    // Prepare demographic information for personalization
+    const demographicInfo = profile ? `
+
+USER DEMOGRAPHICS (Consider for culturally appropriate and age-appropriate styling):
+- Age Group: ${profile.age_group || 'not specified'}
+- Gender: ${profile.gender || 'not specified'}
+- Region: ${profile.region || 'not specified'}
+
+DEMOGRAPHIC STYLING GUIDELINES:
+${profile.age_group === 'child' ? '- Focus on comfortable, playful, age-appropriate styles\n- Prioritize comfort and ease of movement\n- Avoid overly mature or formal looks unless specifically requested' : ''}
+${profile.age_group === 'teen' ? '- Balance trendy and age-appropriate styles\n- Consider school/social occasion appropriateness\n- Include casual and sporty options' : ''}
+${profile.age_group === 'senior' ? '- Prioritize comfort and elegance\n- Consider ease of wear and practicality\n- Classic, timeless combinations work best' : ''}
+${profile.gender === 'male' ? '- Focus on menswear items (pants, shirts, jackets, etc.)\n- Consider traditional male fashion aesthetics\n- Suggest masculine accessories' : ''}
+${profile.gender === 'female' ? '- Consider both feminine and androgynous options\n- Include dresses, skirts as viable options\n- Suggest feminine accessories when appropriate' : ''}
+${profile.gender === 'non_binary' ? '- Focus on gender-neutral styling\n- Mix traditionally masculine and feminine elements\n- Prioritize personal expression and comfort' : ''}
+${profile.region?.toLowerCase().includes('india') ? '- Include traditional Indian wear when available (kurti, salwar, saree, etc.)\n- Consider cultural occasions (festivals, traditional events)\n- Mix traditional and western styles when appropriate' : ''}
+${profile.region?.toLowerCase().includes('middle east') || profile.region?.toLowerCase().includes('arab') ? '- Consider modest fashion preferences\n- Include traditional garments when available\n- Respect cultural modesty standards' : ''}
+${profile.region?.toLowerCase().includes('asia') ? '- Consider regional fashion trends\n- Include traditional garments if available\n- Balance modern and traditional aesthetics' : ''}
+` : '';
+
     const prompt = `You are a professional fashion stylist for the OutfitFlex app with expertise in color theory and pattern mixing.
+
+CRITICAL OUTFIT CONSTRUCTION RULES (MUST FOLLOW):
+1. NEVER combine items that serve the same purpose:
+   - Do NOT pair dresses with skirts, pants, or shorts
+   - Do NOT combine multiple bottom pieces (pants + shorts, skirt + pants, etc.)
+   - Do NOT layer multiple full-coverage tops (two t-shirts, two blouses, etc.)
+2. Dresses are STANDALONE pieces - wear them alone with shoes and accessories
+3. One top + one bottom is the standard outfit formula (unless layering outerwear)
+4. Corsets and vests are LAYERING pieces - wear OVER tops or dresses, never alone
+5. Outerwear (jackets, coats, blazers) goes OVER the outfit, not as the main piece
+
+VALID OUTFIT FORMULAS:
+- Dress + Shoes + Accessories
+- Top + Bottom + Shoes + Accessories
+- Top + Bottom + Outerwear + Shoes + Accessories
+- Top + Vest/Corset + Bottom + Shoes + Accessories
+- Dress + Vest/Corset + Shoes + Accessories
+
+INVALID COMBINATIONS TO AVOID:
+✗ Dress + Pants/Shorts/Skirt
+✗ Skirt + Shorts
+✗ Two Tops (unless one is outerwear)
+✗ Corset/Vest without a top underneath
+✗ Any combination that doesn't make logical sense
 
 CRITICAL COLOR COMBINATION RULES:
 1. Complementary colors work well together (opposite on color wheel)
@@ -101,6 +188,8 @@ PATTERN-SPECIFIC PAIRING:
 - Geometric items: pair with solid colors
 - Plaid/Checkered: pair with solid colors only
 - Animal print: treat as neutral, pair with solid colors
+${dislikedInfo}
+${demographicInfo}
 
 Filters requested:
 - Occasion: ${filters.occasion || 'any'}
@@ -112,18 +201,21 @@ Wardrobe items available (with color hex codes and patterns):
 ${JSON.stringify(wardrobeData, null, 2)}
 
 Rules:
-1. Apply color theory - NO random color combinations
-2. Check pattern compatibility before pairing
-3. Provide 2-3 outfit combinations ranked by color/pattern harmony
-4. Each outfit must have:
+1. STRICTLY follow outfit construction rules - check category compatibility FIRST
+2. Apply color theory - NO random color combinations
+3. Check pattern compatibility before pairing
+4. Provide 2-3 outfit combinations ranked by practicality and color/pattern harmony
+5. VALIDATE each outfit makes logical sense before including it
+6. Each outfit must have:
    - title (descriptive name)
-   - match_score (0-100, based on color/pattern harmony + filter match)
+   - match_score (0-100, based on outfit logic + color/pattern harmony + filter match)
    - items (wardrobe item names)
    - footwear (from wardrobe or suggestion)
    - accessories (styling tips)
-   - reasoning (explain the color/pattern choices)
+   - reasoning (explain why this outfit makes sense and the color/pattern choices)
    - color_harmony_score (0-100, how well colors work together)
    - pattern_balance (description of pattern mixing strategy)
+   - occasion (which occasion this outfit suits)
 
 Output JSON format:
 {
@@ -187,15 +279,20 @@ Output JSON format:
     }
 
     const data = await response.json();
-    const aiResponse = data.choices[0].message.content;
+    let aiResponse = data.choices[0].message.content;
+
+    // Strip markdown code blocks if present
+    if (aiResponse.includes('```')) {
+      aiResponse = aiResponse.replace(/```json\s*/g, '').replace(/```\s*/g, '');
+    }
 
     let suggestions;
     try {
-      suggestions = JSON.parse(aiResponse);
+      suggestions = JSON.parse(aiResponse.trim());
     } catch (parseError) {
       console.error('Failed to parse AI response:', parseError);
       console.log('Raw AI response:', aiResponse);
-      return new Response(JSON.stringify({ error: 'Invalid AI response format' }), {
+      return new Response(JSON.stringify({ error: 'Failed to generate outfit suggestions. Please try again.' }), {
         status: 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
