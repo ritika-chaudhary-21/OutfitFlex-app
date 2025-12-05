@@ -39,16 +39,6 @@ The app checks the weather in your area and suggests appropriate outfits. No mor
 **That's It!** No special equipment needed - just your regular phone or computer.
 
 ### Production Environment
-**Web Application:**
-- CDN hosting (Vercel, Netlify, or similar)
-- SSL certificate for HTTPS
-- Domain name registration
-
-**Mobile Application:**
-- iOS: Xcode 14+ (for iOS deployment)
-- Android: Android Studio (for Android deployment)
-- Apple Developer Account ($99/year)
-- Google Play Console Account ($25 one-time)
 
 **Backend Infrastructure:**
 - Supabase cloud hosting
